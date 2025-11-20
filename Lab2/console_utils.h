@@ -10,31 +10,29 @@
 #define COLOR_NORMAL_FG  "\033[32m"  // Green text
 #define COLOR_TITLE_FG   "\033[33m"  // Yellow text
 
-// Simple key codes
-#define KEY_UP     1001
-#define KEY_DOWN   1002
-#define KEY_ENTER  1003
-#define KEY_BACK   1004
-#define KEY_Q      'q'
-#define KEY_Q_UP   'Q'
+// Key codes (custom)
+#define KEY_UP       1001
+#define KEY_DOWN     1002
+#define KEY_ENTER    1003
+#define KEY_BACK     1004
+#define KEY_HOME     1005
+#define KEY_OTHER    1999
 
 #define MENU_ITEM_COUNT 3
 #define MENU_WIDTH      39
 
-typedef struct {
-    i32 rows;
-    i32 cols;
-} TermSize;
-
-void clear_screen();
-void go_xy(i32 x, i32 y);
-TermSize get_term_size();
+// Console helpers
 void start_console();
 void stop_console();
-i32 get_key();
+void clear_screen();
+void go_xy(i32 x, i32 y);
+i32  get_key();
 
+// UI
 void draw_menu(const char* items[], i32 count, i32 sel);
 void show_content(const char* word);
-i32 run_app();
+
+// Main loop
+i32  run_app();
 
 #endif
