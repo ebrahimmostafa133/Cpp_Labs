@@ -1,70 +1,57 @@
 #include "console_utils.h"
+
 #include <iostream>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <string>
 
 #if defined(_WIN32) || defined(_WIN64)
-
-// ---------------- Windows ----------------
+// ===================== Windows =====================
 #include <conio.h>
 #include <windows.h>
 
 void start_console() {
+    // Enable ANSI escape sequences on newer Windows consoles
     HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
-    if (hOut != INVALID_HANDLE_VALUE) {
-        DWORD mode = 0;
-        if (GetConsoleMode(hOut, &mode)) {
-            mode |= ENABLE_VIRTUAL_TERMINAL_PROCESSING;
-            SetConsoleMode(hOut, mode);
-        }
-    }
+    if (hOut == INVALID_HANDLE_VALUE) return;
+
+    DWORD mode = 0;
+    if (!GetConsoleMode(hOut, &mode)) return;
+
+    mode |= ENABLE_VIRTUAL_TERMINAL_PROCESSING;
+    SetConsoleMode(hOut, mode);
 }
 
 void stop_console() {
-    // nothing for now
-}
-
-void clear_screen() {
-    std::cout << "\033[2J\033[1;1H" << std::flush;
-}
-
-void go_xy(i32 x, i32 y) {
-    std::cout << "\033[" << y << ";" << x << "H" << std::flush;
-}
-
-TermSize get_term_size() {
-    TermSize s = {25, 80};
-    HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
-    CONSOLE_SCREEN_BUFFER_INFO info;
-
-    if (GetConsoleScreenBufferInfo(hOut, &info)) {
-        s.cols = info.srWindow.Right - info.srWindow.Left + 1;
-        s.rows = info.srWindow.Bottom - info.srWindow.Top + 1;
-    }
-    return s;
+    // Nothing special to restore here
 }
 
 i32 get_key() {
-    i32 ch = _getch();
+    int ch = _getch();
 
+    // Enter
     if (ch == '\r') return KEY_ENTER;
-    if (ch == '\b') return KEY_BACK;
+    // Backspace
+    if (ch == 8)    return KEY_BACK;
 
+    // Extended keys
     if (ch == 0 || ch == 0xE0) {
         ch = _getch();
-        if (ch == 72) return KEY_UP;
-        if (ch == 80) return KEY_DOWN;
-        return 0;
+        if (ch == 72) return KEY_UP;      // Up arrow
+        if (ch == 80) return KEY_DOWN;    // Down arrow
+        if (ch == 71) return KEY_HOME;    // Home
+        return KEY_OTHER;
     }
+
     return ch;
 }
 
 #else
+// ===================== Linux / macOS =====================
 
-// ---------------- Linux / macOS ----------------
 #include <termios.h>
 #include <unistd.h>
-#include <sys/ioctl.h>
 
 static struct termios old_term;
 
@@ -73,6 +60,7 @@ void start_console() {
     tcgetattr(STDIN_FILENO, &old_term);
     t = old_term;
 
+    // Raw-ish mode: no canonical input, no echo
     t.c_lflag &= ~(ICANON | ECHO);
     t.c_cc[VMIN]  = 1;
     t.c_cc[VTIME] = 0;
@@ -84,6 +72,37 @@ void stop_console() {
     tcsetattr(STDIN_FILENO, TCSANOW, &old_term);
 }
 
+i32 get_key() {
+    int ch = getchar();
+
+    // ESC sequence for arrows / home
+    if (ch == 0x1B) {          // ESC
+        int seq1 = getchar();
+        if (seq1 == '[') {
+            int seq2 = getchar();
+            if (seq2 == 'A') return KEY_UP;    // Up
+            if (seq2 == 'B') return KEY_DOWN;  // Down
+            if (seq2 == 'H') return KEY_HOME;  // Home (ESC [ H)
+
+            // Some terminals send ESC [ 1 ~ for Home
+            if (seq2 == '1') {
+                int seq3 = getchar();
+                if (seq3 == '~') return KEY_HOME;
+            }
+        }
+        return KEY_OTHER;
+    }
+
+    if (ch == '\n' || ch == '\r') return KEY_ENTER;
+    if (ch == 127 || ch == 8)     return KEY_BACK;   // Backspace
+
+    return ch;
+}
+
+#endif
+
+// ===================== Common helpers =====================
+
 void clear_screen() {
     std::cout << "\033[2J\033[1;1H" << std::flush;
 }
@@ -92,58 +111,17 @@ void go_xy(i32 x, i32 y) {
     std::cout << "\033[" << y << ";" << x << "H" << std::flush;
 }
 
-TermSize get_term_size() {
-    TermSize s = {25, 80};
-    struct winsize ws;
-
-    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) != -1) {
-        s.rows = ws.ws_row;
-        s.cols = ws.ws_col;
-    }
-    return s;
-}
-
-i32 get_key() {
-    i32 ch = getchar();
-
-    if (ch == 0x1B) {
-        struct termios cur, tmp;
-        tcgetattr(STDIN_FILENO, &cur);
-        tmp = cur;
-        tmp.c_cc[VMIN] = 0;
-        tcsetattr(STDIN_FILENO, TCSANOW, &tmp);
-
-        i32 seq1 = getchar();
-        i32 seq2 = getchar();
-
-        tcsetattr(STDIN_FILENO, TCSANOW, &cur);
-
-        if (seq1 == '[') {
-            if (seq2 == 'A') return KEY_UP;
-            if (seq2 == 'B') return KEY_DOWN;
-        }
-        return 0;
-    }
-
-    if (ch == '\n' || ch == '\r') return KEY_ENTER;
-    if (ch == 127 || ch == 8)     return KEY_BACK;
-
-    return ch;
-}
-
-#endif
-
-// ---------------- Drawing ----------------
-
-#include <cstring>
-#include <string>
+// ===================== UI Drawing =====================
 
 void draw_menu(const char* items[], i32 count, i32 sel) {
     clear_screen();
 
-    TermSize s = get_term_size();
-    i32 start_x = (s.cols - MENU_WIDTH) / 2;
-    i32 start_y = (s.rows - (count + 6)) / 2;
+    // Simple fixed "virtual" terminal size
+    const i32 term_cols = 80;
+    const i32 term_rows = 25;
+
+    i32 start_x = (term_cols - MENU_WIDTH) / 2;
+    i32 start_y = (term_rows - (count + 7)) / 2;
     if (start_y < 1) start_y = 1;
 
     i32 y = start_y;
@@ -152,13 +130,13 @@ void draw_menu(const char* items[], i32 count, i32 sel) {
     go_xy(start_x, y++);
     std::cout << COLOR_TITLE_FG << "=======================================" << COLOR_RESET << "\n";
     go_xy(start_x, y++);
-    std::cout << COLOR_TITLE_FG << "|       Simple Terminal Menu          |" << COLOR_RESET << "\n";
+    std::cout << COLOR_TITLE_FG << "|          Simple Menu App            |" << COLOR_RESET << "\n";
     go_xy(start_x, y++);
     std::cout << COLOR_TITLE_FG << "=======================================" << COLOR_RESET << "\n\n";
 
     y++;
 
-    // Items
+    // Menu items
     for (i32 i = 0; i < count; ++i) {
         go_xy(start_x, y++);
         if (i == sel) {
@@ -176,97 +154,116 @@ void draw_menu(const char* items[], i32 count, i32 sel) {
         std::cout << "\n";
     }
 
-    // Help text
-    y++;
-    go_xy(start_x, y++);
-    std::cout << COLOR_TITLE_FG << "---------------------------------------" << COLOR_RESET << "\n";
-    go_xy(start_x, y++);
-    std::cout << "Use UP / DOWN, ENTER to select." << "\n";
-    go_xy(start_x, y++);
-    std::cout << "Press Q to quit. BACKSPACE from content." << "\n";
-    go_xy(start_x, y++);
-    std::cout << COLOR_TITLE_FG << "---------------------------------------" << COLOR_RESET << "\n";
+    // // Help text
+    // y++;
+    // go_xy(start_x, y++);
+    // std::cout << COLOR_TITLE_FG << "---------------------------------------" << COLOR_RESET << "\n";
+    // go_xy(start_x, y++);
+    // std::cout << "Use UP / DOWN to move, ENTER to select.\n";
+    // go_xy(start_x, y++);
+    // std::cout << "In content, press BACKSPACE or HOME to go back.\n";
+    // go_xy(start_x, y++);
+    // std::cout << "Select Exit to quit.\n";
+    // go_xy(start_x, y++);
+    // std::cout << COLOR_TITLE_FG << "---------------------------------------" << COLOR_RESET << "\n";
 
-    go_xy(1, s.rows);
-    std::cout << std::flush;
+    // go_xy(1, term_rows);
+    // std::cout << std::flush;
 }
 
 void show_content(const char* word) {
     clear_screen();
 
-    TermSize s = get_term_size();
-    const i32 BOX_W = 50;
-    const i32 BOX_H = 7;
+    const i32 term_cols = 80;
+    const i32 term_rows = 25;
+    const i32 BOX_W = 30;
+    const i32 BOX_H = 5;
 
-    i32 x = (s.cols - BOX_W) / 2;
-    i32 y = (s.rows - BOX_H) / 2;
+    i32 x = (term_cols - BOX_W) / 2;
+    i32 y = (term_rows - BOX_H) / 2;
     if (y < 1) y = 1;
 
     i32 cy = y;
 
-    // Top
+    // Top border
     go_xy(x, cy++);
     std::cout << COLOR_TITLE_FG << std::string(BOX_W, '=') << COLOR_RESET << "\n";
 
-    // Title line
+    // Centered word line
     go_xy(x, cy++);
-    std::string title = "| Content: ";
-    title += word;
-    std::string line = title;
-    if ((int)line.size() < BOX_W - 1) {
-        line += std::string(BOX_W - 1 - line.size(), ' ');
+    {
+        std::string line = word;
+        if ((i32)line.size() < BOX_W) {
+            i32 left_pad  = (BOX_W - (i32)line.size()) / 2;
+            i32 right_pad = BOX_W - (i32)line.size() - left_pad;
+            line = std::string(left_pad, ' ') + line + std::string(right_pad, ' ');
+        }
+        std::cout << COLOR_TITLE_FG << line << COLOR_RESET << "\n";
     }
-    line += "|";
-    std::cout << COLOR_TITLE_FG << line << COLOR_RESET << "\n";
 
-    // Separator
+    // Bottom border
     go_xy(x, cy++);
-    std::cout << COLOR_TITLE_FG << std::string(BOX_W, '=') << COLOR_RESET << "\n\n";
+    std::cout << COLOR_TITLE_FG << std::string(BOX_W, '=') << COLOR_RESET << "\n";
 
+    // Info
     cy++;
     go_xy(x, cy++);
-    std::cout << "This is a simple content screen for: " << word << "\n";
-    go_xy(x, cy++);
-    std::cout << "Press BACKSPACE to go back to the menu.\n";
+    std::cout << "Press BACKSPACE or HOME to return to menu.\n";
 
-    go_xy(1, s.rows);
+    go_xy(1, term_rows);
     std::cout << std::flush;
 }
 
-// ---------------- Main app loop ----------------
+// ===================== Main app loop =====================
 
 i32 run_app() {
-    const char* items[MENU_ITEM_COUNT] = {"VIEW", "DISPLAY", "EXIT"};
-    i32 sel   = 0;
-    i32 mode  = 0; // 0 = menu, 1 = content
+    const char* items[MENU_ITEM_COUNT] = {"New", "Display", "Exit"};
+    i32  sel      = 0;          // which menu item is selected
+    i32  mode     = 0;          // 0 = menu, 1 = content
+    bool running  = true;       // loop control (no break)
 
     start_console();
 
-    while (true) {
+    std::string content_word = "New";  // word shown in content mode
+
+    while (running) {
         if (mode == 0) {
+            // MENU MODE
             draw_menu(items, MENU_ITEM_COUNT, sel);
         } else {
-            show_content(items[sel]);
+            // CONTENT MODE
+            show_content(content_word.c_str());
         }
 
-        i32 ch = get_key();
+        i32 key = get_key();
 
         if (mode == 0) {
-            if (ch == KEY_UP) {
+            // ===== MENU MODE =====
+            if (key == KEY_UP) {
                 sel = (sel - 1 + MENU_ITEM_COUNT) % MENU_ITEM_COUNT;
-            } else if (ch == KEY_DOWN) {
+            } else if (key == KEY_DOWN) {
                 sel = (sel + 1) % MENU_ITEM_COUNT;
-            } else if (ch == KEY_ENTER) {
-                if (sel == 2) break;  // EXIT
-                mode = 1;
+            } else if (key == KEY_ENTER) {
+                if (sel == 0) {
+                    // New
+                    content_word = "New";
+                    mode = 1;
+                } else if (sel == 1) {
+                    // Display
+                    content_word = "Display";
+                    mode = 1;
+                } else if (sel == 2) {
+                    // Exit
+                    running = false;   // no break
+                }
             }
         } else {
-            if (ch == KEY_BACK) {
+            // ===== CONTENT MODE =====
+            if (key == KEY_BACK || key == KEY_HOME) {
+                // Back to menu
                 mode = 0;
             }
         }
-
-        if (ch == KEY_Q || ch == KEY_Q_UP) break;
     }
 
     stop_console();
@@ -274,5 +271,3 @@ i32 run_app() {
     std::cout << "Goodbye!\n";
     return 0;
 }
-
-
