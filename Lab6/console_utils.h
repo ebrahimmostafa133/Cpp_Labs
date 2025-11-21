@@ -33,8 +33,8 @@ i32  get_key();
 void* allocate_memory(u32 size);
 void  free_memory(void* ptr);
 
-i32 save_overwrite(const char* name, const std::string& data);
-i32 save_append(const char* name, const std::string& data);
+i32 save_overwrite(const char* name, const char* data, i32 size); 
+i32 save_append(const char* name, const char* data, i32 size);    
 std::string read_file(const char* name);
 
 void draw_menu(const char* items[], i32 count, i32 choice);
