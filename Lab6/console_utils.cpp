@@ -79,10 +79,10 @@ void free_memory(void* ptr) {
     }
 }
 
-i32 save_overwrite(const char* name, const std::string& data) {
+i32 save_overwrite(const char* name, const char* data, i32 size) {
     std::ofstream file(name, std::ios::trunc);
     if (file.is_open()) {
-        file << data;
+        file.write(data, size);
         file.close();
         return 0;
     } else {
@@ -91,10 +91,10 @@ i32 save_overwrite(const char* name, const std::string& data) {
     }
 }
 
-i32 save_append(const char* name, const std::string& data) {
+i32 save_append(const char* name, const char* data, i32 size) {
     std::ofstream file(name, std::ios::app);
     if (file.is_open()) {
-        file << data;
+        file.write(data, size);
         file.close();
         return 0;
     } else {
@@ -230,7 +230,11 @@ void draw_editor(const char* buffer, i32 current_size, i32 max_size, i32 cursor_
     y++;
     
     go_xy(x, y++);
-    std::cout << "Buffer: [" << buffer << "]\n";
+    std::cout << "Buffer: [";
+    for (i32 i = 0; i < current_size; ++i) {
+        std::cout << buffer[i];
+    }
+    std::cout << "]\n";
     
     go_xy(x + 9 + cursor_pos, y++);
     std::cout << "^\n";
@@ -257,7 +261,8 @@ i32 run_app() {
 
     start_console();
 
-    std::string buffer; 
+    char* buffer = nullptr; 
+    i32 current_size = 0;
     std::string file_content;
     
     i32 max_size = 0;
@@ -272,7 +277,12 @@ i32 run_app() {
             go_xy(5 + 33, 6);
             std::cout << size_input << std::flush;
         } else if (mode == MODE_EDIT_STRING) {
-            draw_editor(buffer.c_str(), (i32)buffer.size(), max_size, cursor_pos);
+            if (buffer != nullptr) {
+                draw_editor(buffer, current_size, max_size, cursor_pos);
+            } else {
+                mode = MODE_GET_SIZE;
+                continue;
+            }
         } else if (mode == MODE_FILE_OPTIONS) {
              draw_save_menu(choice);
         } else {
@@ -288,6 +298,11 @@ i32 run_app() {
                 choice = (choice + 1) % MENU_COUNT;
             } else if (key == KEY_ENTER) {
                 if (choice == 0) {
+                    if (buffer != nullptr) {
+                        free_memory(buffer);
+                        buffer = nullptr;
+                        current_size = 0;
+                    }
                     max_size = 0;
                     size_input.clear();
                     mode = MODE_GET_SIZE;
@@ -313,15 +328,25 @@ i32 run_app() {
                     if (new_size > 0) {
                         max_size = new_size;
                         
+                        buffer = (char*)allocate_memory(max_size + 1);
+                        if (buffer == nullptr) {
+                            max_size = 0;
+                            size_input.clear();
+                            continue;
+                        }
+                        buffer[0] = '\0';
+
                         std::string loaded_data = read_file(FILE_NAME);
                         
                         if (!loaded_data.empty() && (i32)loaded_data.size() <= max_size) {
-                             buffer = loaded_data;
+                             std::strncpy(buffer, loaded_data.c_str(), max_size);
+                             buffer[max_size] = '\0';
+                             current_size = (i32)loaded_data.size();
                         } else {
-                            buffer.clear();
+                            current_size = 0;
                         }
                         
-                        cursor_pos = (i32)buffer.size();
+                        cursor_pos = current_size;
                         mode = MODE_EDIT_STRING;
                     } else {
                          size_input.clear();
@@ -334,20 +359,25 @@ i32 run_app() {
 
         else if (mode == MODE_EDIT_STRING) {
             if (key == KEY_LEFT) {
-                cursor_pos = std::max(0, cursor_pos - 1);
+                cursor_pos = std::max((i32)0, cursor_pos - 1);
             } else if (key == KEY_RIGHT) {
-                cursor_pos = std::min((i32)buffer.size(), cursor_pos + 1);
+                cursor_pos = std::min(current_size, cursor_pos + 1);
             } else if (key == KEY_BACK) {
                 if (cursor_pos > 0) {
-                    buffer.erase(cursor_pos - 1, 1);
-                    cursor_pos = std::max(0, cursor_pos - 1);
+                    std::memmove(buffer + cursor_pos - 1, buffer + cursor_pos, current_size - cursor_pos);
+                    current_size--;
+                    buffer[current_size] = '\0';
+                    cursor_pos = std::max((i32)0, cursor_pos - 1);
                 }
             } else if (key == KEY_HOME) {
                 choice = 0;
                 mode = MODE_FILE_OPTIONS;
             } else if (key >= 32 && key <= 126) {
-                if ((i32)buffer.size() < max_size) {
-                    buffer.insert(cursor_pos, 1, (char)key);
+                if (current_size < max_size) {
+                    std::memmove(buffer + cursor_pos + 1, buffer + cursor_pos, current_size - cursor_pos);
+                    buffer[cursor_pos] = (char)key;
+                    current_size++;
+                    buffer[current_size] = '\0';
                     cursor_pos++;
                 }
             }
@@ -360,10 +390,10 @@ i32 run_app() {
                 choice = (choice + 1) % FILE_MENU_COUNT;
             } else if (key == KEY_ENTER) {
                 if (choice == 0) {
-                    save_overwrite(FILE_NAME, buffer); 
+                    save_overwrite(FILE_NAME, buffer, current_size); 
                     mode = MODE_MENU;
                 } else if (choice == 1) {
-                    save_append(FILE_NAME, buffer); 
+                    save_append(FILE_NAME, buffer, current_size); 
                     mode = MODE_MENU;
                 } else if (choice == 2) {
                     mode = MODE_EDIT_STRING;
@@ -380,6 +410,13 @@ i32 run_app() {
 
     stop_console();
     clear_screen();
-    std::cout << "Goodbye! The final buffer was: [" << buffer << "]\n";
+    std::cout << "Goodbye! The final buffer was: [";
+    if (buffer != nullptr) {
+        for (i32 i = 0; i < current_size; ++i) {
+            std::cout << buffer[i];
+        }
+        free_memory(buffer);
+    }
+    std::cout << "]\n";
     return 0;
 }
